@@ -45,3 +45,7 @@ a/2.5 # 3 beats, 1.5 seconds
 a/4.5 # 1.5 beat, 0.75 seconds
 
 If the audio is shorter than the length, silence will be added. 
+
+It is implemented as files. Later on when it is more stable and has more 
+   subscribers, it will be turned into a package. 
+   
