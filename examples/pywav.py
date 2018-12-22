@@ -21,10 +21,24 @@ class Wave(object):
             self.samples = wave 
             self.normalize() 
     
-    def set(self, rate, samples): 
-        self.rate = rate
+    def set_samples(self, samples): 
         self.samples = samples 
+        
+    def copy(self): 
+        r = Wave() 
+        samples = self.samples.copy() 
+        r.set(samples, self.rate) 
+        return r
     
+    def __eq__(self, other): 
+        return (self.rate == other.rate) and \
+            ( np.array_equal(self.samples, other.samples) ) 
+        
+    def set(self, samples, rate=CD_RATE): 
+        # print('samples=', samples) 
+        self.samples = samples 
+        self.rate = rate
+        
     def print(self): 
         print('Rate is', self.rate)
         print('Samples', self.samples[:5] ) 
@@ -44,30 +58,56 @@ class Wave(object):
         m = float(max( min0,max0  )  ) 
         # print(m) 
         s2 = self.samples.copy().astype(np.float32) 
-        s2 /= m 
+        if m>0 : 
+            s2 /= m 
         self.samples = s2 
             
-    def mix(self,start, end, wave2, ratio=1): 
+    def mix(self, other, start, end=None, cut=True, ratio=1): 
+        ''' Mix 2 audio together, at a certain position
+        other -- the other audio to mix with
+        start -- position at the current audio to be mixed 
+        end   -- end position. If None, then mix to the maximum length
+        cut   -- If the other audio is longer than the current one, 
+                     it will be cut if "cut" is True 
+        radio -- When mix, multiply the other audio with this ratio, 
+                  default is 1 
+        '''
         rate=self.rate 
-        rate2=wave2.rate 
-        w2=wave2.samples
+        rate2=other.rate 
+        w2=other.samples
         
         if rate != rate2: 
+            # to do: raise an exception 
             print('Rate not match', rate2) 
             return None 
+            
+        # calculate proper length for both audios
+        # There are several cases: 
+        # 1. Cut = True, len1 >= len2, mix according to len2 
+        # 2. Cut = True, len1 < len2,  mix according to len1 
+        # 3. Cut = False, len1 >=len2, mix according to len2 
+        # 4. Cut = False, len1 < len2, extend len1, and mix according to len2 
+        #  So, 1 and 3 are the same. 
+
         start0 = int(rate * start) 
-        end0 = int(rate * end) 
-        len1 = end0 - start0 
+        len1 = len(self.samples)-start0 if end is None else int(rate*end) 
         len2 = len(w2) 
-        out=self.samples.copy() 
-        if len1 < len2: # chord is too long, cut it 
-            out[start0:end0] += w2[:len1]*ratio 
-        else: 
-            out[start0:start0+len2] += w2*ratio 
-        # out /= 2.0
-        oc = Wave()
-        oc.set(self.rate, out) 
-        return oc
+        
+        len3 = 0
+        out = self.samples.copy()  
+        if len1 >= len2: # branch 1 and 3 
+            len3 = len2 
+        elif cut:  # branch 2 
+            len3 = len1 
+        else:   # branch 4 
+            # extend 
+            out = np.zeros(start0 + len2)
+            out[:len(self.samples)] = self.samples  
+            len3 = len2
+             
+        out[start0:start0+len3] += w2[:len3]*ratio
+        
+        self.set_samples(out) 
         
     def mul(self, rate): 
         self.samples = self.samples * rate 
@@ -78,12 +118,14 @@ class Wave(object):
     def __truediv__(self, other): 
         n = int( self.rate * 60 *4 / ( self._tempo * other)) 
         a = Wave()
-        a.set( self.rate, self.samples[:n]  ) 
+        a.set_samples(self.samples[:n]  ) 
         return a 
         
-    def save(self, filename): 
+    def save(self, filename, output=False): 
         self.normalize() 
         wf.write( filename, self.rate, self.samples) 
+        if output: 
+            print(filename, 'is created.') 
 
     def __add__(self, w2): 
         if self.rate != w2.rate: 
@@ -92,7 +134,7 @@ class Wave(object):
         else: 
             samples = np.concatenate([ self.samples, w2.samples] ) 
             c = Wave()
-            c.set(self.rate, samples) 
+            c.set_samples(samples) 
             return c
     
     def piece(self, start, end): 
@@ -100,7 +142,7 @@ class Wave(object):
         start0 = int(rate * start) 
         end0 = int(rate * end) 
         oc=Wave() 
-        oc.set(rate, self.samples[start0:end0]) 
+        oc.set(self.samples[start0:end0], rate) 
         return oc
 
     def play(self): 
@@ -123,7 +165,7 @@ class Wave(object):
             # calculate length. If length is longer than samples, fill with 0 
             samples = self.samples[ start_sample: stop_sample] 
             w = Wave()
-            w.set(self.rate, samples)
+            w.set( samples, self.rate)
             return w 
         return None 
 
@@ -134,19 +176,46 @@ def note(freq, len, amp=1000, rate=CD_RATE):
     return data.astype(np.float32) # two byte integers
     
         
-_rest0 = note(1, 4, amp=0, rate=CD_RATE) 
-
-rest=Wave()
-rest.set(CD_RATE, _rest0) 
+def rest_seconds(n): 
+    r = Wave()
+    samples=note(1, n, amp=0)  
+    r.set(samples)  
+    return r 
+    
+rest= rest_seconds(4) 
 
 
 def test_init_set():
     a = Wave()
     d = np.array([1,2,3,4,5]) 
-    a.set(44100, d) 
+    a.set(d) 
     a2=a.samples
-    assert a2==d 
+    assert np.array_equal(a2,d) 
     
-
+def test_mix(): 
+    a= Wave() 
+    a.set(np.array([4,2,3]),rate=1)  
+    a2 = a.copy() 
+    
+    b= Wave()
+    b.set(np.array([2,2,2]),rate=1) 
+    
+    a.mix(b,1,cut=False)
+    a.print() 
+    
+    c=Wave()
+    c.set(np.array([4,4,5,2]), rate=1) 
+    
+    assert  a==c 
+    
+    a2.mix(b,1,cut=True)
+    c2=Wave() 
+    c2.set( np.array([4,4,5]), rate=1)
+    
+    assert np.array_equal(a2.samples, c2.samples) 
+    
+    
+if __name__=='__main__': 
+    test_mix() 
 
 
